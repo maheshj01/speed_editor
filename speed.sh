@@ -7,6 +7,7 @@ start="00:00:04"
 end="00:00:32"
 extension="mp4"
 speed=3.0  # Change this to 0.5, 1.5, 2.0, etc.
+delete_intermediate=false
 
 # === Output Directory ===
 if [ -d "$output_dir" ]; then
@@ -88,6 +89,54 @@ if [ $? -eq 0 ]; then
     # Verify the output file exists and has content
     if [ -f "$sped_up_middle" ] && [ -s "$sped_up_middle" ]; then
         echo "📁 Output file size: $(du -h "$sped_up_middle" | cut -f1)"
+
+        # === 5. Concatenate all parts into final output ===
+        echo "🔗 Combining all parts into final output..."
+
+        # Check if all required parts exist
+        if [ -f "part1.$extension" ] && [ -f "$sped_up_middle" ] && [ -f "part3.$extension" ]; then
+            # Check if the first part has audio streams to determine concat method
+            part1_audio_streams=$(ffprobe -v quiet -select_streams a -show_entries stream=index -of csv=p=0 "part1.$extension" 2>/dev/null | wc -l)
+
+            if [ "$part1_audio_streams" -gt 0 ]; then
+                echo "🎵 Concatenating with audio streams..."
+                # Use ffmpeg concat filter with audio for videos that have audio
+                ffmpeg -y -i "part1.$extension" -i "$sped_up_middle" -i "part3.$extension" \
+                    -filter_complex "[0:v][0:a][1:v][1:a][2:v][2:a]concat=n=3:v=1:a=1[outv][outa]" \
+                    -map "[outv]" -map "[outa]" \
+                    -c:v libx264 -preset fast -crf 23 \
+                    -c:a aac -b:a 128k \
+                    "output.$extension"
+            else
+                echo "🎬 Concatenating video-only (no audio streams)..."
+                # Use ffmpeg concat filter for video-only files
+                ffmpeg -y -i "part1.$extension" -i "$sped_up_middle" -i "part3.$extension" \
+                    -filter_complex "[0:v][1:v][2:v]concat=n=3:v=1[outv]" \
+                    -map "[outv]" \
+                    -c:v libx264 -preset fast -crf 23 \
+                    "output.$extension"
+            fi
+
+            # Check if concatenation was successful
+            if [ $? -eq 0 ] && [ -f "output.$extension" ] && [ -s "output.$extension" ]; then
+                echo "✅ Successfully created final output: output.$extension"
+                echo "📁 Final output size: $(du -h "output.$extension" | cut -f1)"
+
+                # Clean up intermediate files (optional)
+                if [ "$delete_intermediate" = true ]; then
+                    echo "🧹 Cleaning up intermediate files..."
+                    rm -f "part1.$extension" "part2.$extension" "$sped_up_middle" "part3.$extension"
+                fi
+                echo "✨ All done! Your final video is: output.$extension"
+            else
+                echo "❌ Failed to concatenate videos!"
+                exit 1
+            fi
+        else
+            echo "❌ Missing required parts for concatenation!"
+            echo "Required: part1.$extension, $sped_up_middle, part3.$extension"
+            exit 1
+        fi
     else
         echo "❌ Output file is empty or missing!"
         exit 1
